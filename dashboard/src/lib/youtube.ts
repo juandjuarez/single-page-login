@@ -185,7 +185,7 @@ export async function getYouTubeChannelData(): Promise<YouTubeFetchResult> {
 
     const uploadsPlaylistId = channelItem.contentDetails?.relatedPlaylists?.uploads;
     const videos = uploadsPlaylistId
-      ? await getRecentVideos(uploadsPlaylistId, apiKey)
+      ? await getRecentVideosSafely(uploadsPlaylistId, apiKey)
       : [];
 
     return { ok: true, data: { channel, videos } };
@@ -195,6 +195,26 @@ export async function getYouTubeChannelData(): Promise<YouTubeFetchResult> {
         ? error.message
         : "Error desconocido al consultar la API de YouTube.";
     return { ok: false, reason: "api-error", message };
+  }
+}
+
+/**
+ * A brand-new channel with zero uploads has no "uploads" playlist yet, so
+ * playlistItems.list 404s with "playlistNotFound" even though the channel
+ * itself was found fine. That's a normal empty state, not a fetch
+ * failure — treat it as "no videos" instead of failing the whole page.
+ */
+async function getRecentVideosSafely(
+  uploadsPlaylistId: string,
+  apiKey: string
+): Promise<VideoSummary[]> {
+  try {
+    return await getRecentVideos(uploadsPlaylistId, apiKey);
+  } catch (error) {
+    if (error instanceof Error && /playlist/i.test(error.message)) {
+      return [];
+    }
+    throw error;
   }
 }
 

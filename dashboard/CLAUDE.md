@@ -167,6 +167,15 @@ was built against.
   error message) live next to `ChannelHeader`/`VideoGrid` in
   `components/dashboard/youtube/`. Keep that pattern for any future section
   that calls a real external API.
+- **A brand-new channel with zero uploads is a normal state, not an
+  error.** YouTube doesn't create a channel's "uploads" playlist until it
+  has at least one video, so `playlistItems.list` 404s
+  (`playlistNotFound`) for an empty channel even though `channels.list`
+  found it fine. `getRecentVideosSafely()` in `src/lib/youtube.ts` catches
+  that specific failure and returns `[]` instead of failing the whole page
+  — the channel header and stat tiles (0 videos) still render, and
+  `VideoGrid` shows its built-in "no videos yet" message. Any other
+  playlist-fetch failure still surfaces as a real `api-error`.
 
 ## Charts
 
