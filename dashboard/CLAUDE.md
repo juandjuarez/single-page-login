@@ -6,9 +6,11 @@ Guidance for Claude Code (and other contributors) working in this project.
 
 A content management dashboard with five sections: YouTube channel manager,
 analytics, content calendar, competitor tracking, and a news consolidator.
-Every section is currently a **placeholder page** — the shared shell
-(sidebar, routing, theme, UI kit) is built out; the data layer for each
-section is not.
+**YouTube channel manager is real** (public channel stats + recent videos,
+pulled live from the YouTube Data API v3 — see **YouTube integration**
+below). The other four sections are still **placeholder pages** — the
+shared shell (sidebar, routing, theme, UI kit) is built out; their data
+layer is not.
 
 > **Note on repo location:** this project lives in `/dashboard` inside the
 > `single-page-login` repository, not at the repo root. The repo root holds
@@ -25,6 +27,11 @@ section is not.
   primitives) — hand-authored, see **Decisions** below for why
 - **lucide-react** for icons
 - Plain system font stack (no `next/font/google`) — see **Decisions**
+- **YouTube Data API v3** for the one real section, via a server-only
+  fetch client (`src/lib/youtube.ts`) — no SDK, no OAuth (see **YouTube
+  integration**)
+- Charts are **hand-built HTML/CSS** (`components/dataviz/`), not a
+  charting library — see **Charts**
 
 No backend, database, or state management library is wired up yet. Adding
 one is expected future work once a section moves past its placeholder.
@@ -54,11 +61,21 @@ dashboard/
 │   │   │   ├── sidebar.tsx     # desktop (md+) static sidebar
 │   │   │   ├── mobile-header.tsx  # top bar + Sheet-based nav for small screens
 │   │   │   └── sidebar-nav.tsx    # shared link list used by both of the above
+│   │   ├── dataviz/             # hand-built chart primitives (see "Charts")
+│   │   │   └── bar-chart.tsx    # horizontal bar chart, 1 or 2 series
 │   │   └── dashboard/          # page-level building blocks for section pages
 │   │       ├── page-header.tsx        # icon + title + description row
-│   │       └── placeholder-section.tsx # standard "not built yet" page body
+│   │       ├── placeholder-section.tsx # standard "not built yet" page body
+│   │       ├── stat-tile.tsx           # icon + label + value KPI card
+│   │       └── youtube/                # components specific to the YouTube page
+│   │           ├── channel-header.tsx  # banner + avatar + title card
+│   │           ├── video-grid.tsx      # recent-videos thumbnail grid
+│   │           ├── setup-notice.tsx    # shown when env vars aren't set
+│   │           └── error-notice.tsx    # shown when the API call fails
 │   └── lib/
-│       └── utils.ts            # cn() — clsx + tailwind-merge, shadcn convention
+│       ├── utils.ts            # cn() — clsx + tailwind-merge, shadcn convention
+│       ├── format.ts           # number/date formatting (compact, full, es locale)
+│       └── youtube.ts          # server-only YouTube Data API v3 client
 ```
 
 The `(dashboard)` route group exists purely to scope the sidebar layout to
@@ -77,10 +94,13 @@ route never needs the sidebar chrome.
 - **`components/layout/`** is the app chrome — sidebar, mobile nav, and the
   nav config. It doesn't know about any individual section's content.
 - **`components/dashboard/`** is shared UI *for section pages*
-  (`PageHeader`, `PlaceholderSection`). When a section moves from
-  placeholder to real, its page-specific components should live next to it
-  (e.g. `components/dashboard/youtube/`) rather than growing this shared
-  folder indefinitely.
+  (`PageHeader`, `PlaceholderSection`, `StatTile`). When a section moves
+  from placeholder to real, its page-specific components live in their own
+  subfolder (e.g. `components/dashboard/youtube/`, following the YouTube
+  section's example) rather than growing this shared folder indefinitely.
+- **`components/dataviz/`** holds chart primitives shared across sections
+  (currently just `BarChart`). See **Charts** below before adding another
+  chart type or another charting approach.
 - Section pages under `app/(dashboard)/*/page.tsx` stay thin: they set
   `metadata.title` and render one shared component with copy specific to
   that section. Keep that pattern — it's what makes the five pages
@@ -107,6 +127,86 @@ compatibility, but nothing currently switches to it. If a light/dark toggle
 is ever wanted, the token setup already supports it — the work is adding a
 theme provider (e.g. `next-themes`) and a toggle control, not touching the
 color tokens.
+
+## YouTube integration
+
+The "Canal de YouTube" page (`app/(dashboard)/youtube/page.tsx`) is a real,
+data-backed section — everything else is still a placeholder. It reads
+**public** channel data only (subscribers, total views, video count, recent
+uploads with per-video views/likes/comments) via the **YouTube Data API
+v3** using a plain API key. Deliberately **not** OAuth: no Google sign-in,
+no consent screen, no token storage — see the "Tipo de datos" decision this
+was built against.
+
+- **Config:** two env vars, `YOUTUBE_API_KEY` and `YOUTUBE_CHANNEL_ID` (see
+  `.env.example`). Neither is exposed to the client — they're only read
+  inside `src/lib/youtube.ts`, which imports the `server-only` package so
+  an accidental client-side import fails at build time instead of leaking
+  the key into a browser bundle.
+- **Data flow:** `getYouTubeChannelData()` calls `channels.list` for the
+  channel snippet/statistics/branding, then `playlistItems.list` on the
+  channel's uploads playlist, then `videos.list` for per-video statistics
+  (view/like/comment counts) — three small requests, well inside the free
+  daily quota. Results are typed as a discriminated union
+  (`YouTubeFetchResult`: `ok: true` / `not-configured` /
+  `api-error`) so the page can render a distinct state for "not set up yet"
+  vs. "the API call failed" vs. real data, instead of throwing.
+- **Caching:** every request uses `fetch(..., { next: { revalidate: 3600 }
+  })` — this is Next's ISR cache, not a database. Per the "solo estado
+  actual" decision, there's no historical persistence; the page always
+  shows a snapshot that's at most an hour stale.
+- **Images:** channel avatars/banners and video thumbnails are served
+  straight from YouTube's CDN through `next/image`, so their hostnames
+  (`yt3.googleusercontent.com`, `yt3.ggpht.com`, `i.ytimg.com`) are
+  allow-listed in `next.config.ts`'s `images.remotePatterns`. Adding
+  another Google-hosted image source later means adding its hostname
+  there.
+- **Empty/error states are first-class**, not afterthoughts:
+  `YouTubeSetupNotice` (no env vars — walks through getting an API key and
+  channel ID) and `YouTubeErrorNotice` (API call failed — shows the actual
+  error message) live next to `ChannelHeader`/`VideoGrid` in
+  `components/dashboard/youtube/`. Keep that pattern for any future section
+  that calls a real external API.
+
+## Charts
+
+The two YouTube charts ("Vistas por video", "Interacción por video") are
+built with `components/dataviz/BarChart` — plain HTML/CSS bar rows, not a
+charting library (no Recharts/Chart.js/etc. dependency). Follows this
+repo's [dataviz skill] conventions:
+
+- **Colors are the validated palette**, not chosen by eye: series use the
+  reference categorical palette's dark-mode slot 1 (blue `#3987e5`) and
+  slot 2 (orange `#d95926`), confirmed with the skill's
+  `validate_palette.js` script against this app's dark card surface before
+  use. If you add a third series anywhere, re-run the validator rather
+  than picking a color that "looks fine."
+- **One hue for magnitude, color for identity.** The single-series views
+  chart uses one flat hue (comparing magnitude); the 2-series
+  likes-vs-comments chart uses the two colors specifically to distinguish
+  the two series, with a legend (required at 2+ series) and a shared
+  0–domainMax axis — never two different scales on one chart.
+- **Mark spec:** bars ≤24px thick, 4px rounded corner at the value end and
+  square at the baseline, a 2px gap between grouped bars, hairline
+  gridlines.
+- **Interaction:** each row is focusable/hoverable and shows one tooltip
+  with every series' value (not per-bar-segment tooltips) — same content on
+  keyboard focus as on mouse hover. A screen-reader-only `<table>` mirrors
+  every chart's data so nothing depends on hover to be reachable.
+- **RSC boundary gotcha:** `BarChart` is a Client Component
+  (`"use client"`) because it needs interaction state. Its parent page is a
+  Server Component (it does the YouTube fetch). A Server Component **cannot
+  pass a function prop to a Client Component** — React throws at runtime
+  ("Functions cannot be passed directly to Client Components"). That's why
+  `BarChart` imports `formatCompactNumber` itself instead of taking a
+  `valueFormatter` prop from the page — keep that in mind before adding a
+  formatter/callback prop to any chart or other client component that a
+  server component renders.
+
+[dataviz skill]: this repo doesn't vendor the skill's docs; if you have
+Claude Code with the `dataviz` skill available, load it before adding a
+new chart type — it covers form selection, the color validator, mark
+specs, interaction, and an anti-pattern checklist.
 
 ## Decisions made during setup
 
@@ -145,6 +245,17 @@ later in an environment without that restriction:
   `SidebarNav` give the same visual result (fixed desktop sidebar,
   slide-over on mobile) with far less code. Revisit if collapse/persist
   behavior becomes a real requirement.
+- **YouTube: public API-key data, no historical persistence.** Two scope
+  decisions made explicitly, not defaults: (1) public channel/video stats
+  via an API key rather than the YouTube Analytics API via OAuth — much
+  less setup (no consent screen, no token storage) at the cost of not
+  having private metrics like watch time or traffic sources; (2) charts
+  show the current snapshot only, no day-over-day trend — avoids needing a
+  database and a scheduled job to collect daily snapshots. If either
+  requirement shows up later, both are addable without re-architecting:
+  OAuth would replace `src/lib/youtube.ts`'s API-key fetch with a token
+  flow, and historical charts would add a small persistence layer that
+  writes a snapshot on a cron/route-handler hit.
 
 ## Commands
 
